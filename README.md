@@ -5,7 +5,7 @@ Truchet tiles demo.
 
 The "8-bit Show And Tell" YouTube channel is here: https://www.youtube.com/@8_Bit
 
-"8-bit Show And Tell"'s C64 video of the code walkthrough for the Truchet tiles program is here: https://youtu.be/cFWNo1GjMP0?si=BDOwbhU9NBsUG_Kr
+"8-bit Show And Tell"'s C64 video of the code walkthrough for the Truchet tiles program is here: https://www.youtube.com/watch?v=cFWNo1GjMP0
 
 This repository is for the Truchet demo ported to the Atari 8-bit computers. This initial version is a direct port with as few changes possible to make the program function on the Atari the same as the C64. There may be future versions that Atari-fy the demo to do more cool things. 
 
