@@ -3,7 +3,7 @@ Truchet tiles demo.
 
 | **Truchet Tiles Demo** |
 | ------- |
-| [![TRUCHET](truchet00.png)] | 
+| ![TRUCHET](truchet00.png) | 
 
 ---
 
