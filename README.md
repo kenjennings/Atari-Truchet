@@ -1,5 +1,4 @@
 # Atari-Truchet
-Truchet tiles demo.
 
 | **Truchet Tiles Demo** |
 | ------- |
