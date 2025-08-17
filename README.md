@@ -3,7 +3,7 @@ Truchet tiles demo.
 
 | **Truchet Tiles Demo** |
 | ------- |
-| [![TRUCHET](https://github.com/kenjennings/Atari-Truchet/truchet00.png)] | 
+| [![TRUCHET](truchet00.png)] | 
 
 ---
 
