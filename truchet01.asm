@@ -1,25 +1,22 @@
 ; ==============================================================
 ; Truchet Tiles
-; ==============================================================
-;
-; Version 01 -- 2025-08-19 -- Ken Jennings
-;
-; WORK IN PROGRESS . . .
 ;
 ; Port to Atari from "8-bit Show And Tell" C64 version.
-; Atari-fying the code and features.
+; ==============================================================
+;
+; Ken Jennings
 ;
 ; Source uses MADS assembler syntax.
-; 
-; Code now depends on the Atari includes for sensible 
-; symbols and other goodies.   Get them here:
-; https://github.com/kenjennings/Atari-Mads-Includes
-;
 ; %>  mads truchet01.asm -o:truchet01.xex
+;
+; Code now depends on the Atari includes for sensible 
+; symbols and other goodies.   
+; Get them here:
+; https://github.com/kenjennings/Atari-Mads-Includes
 ;
 ; ==============================================================
 ;
-; Version 00:
+; Version 00:  (See github.)
 ;
 ; Direct port of the C64 code with as few changes as possible.
 ; Seriously, intentionally going out of my way to make as few 
@@ -28,10 +25,16 @@
 ;
 ; ==============================================================
 ;
-; Version 01:  WORK IN PROGRESS . . . 
-;
-; Atari-fication...
+; Version 01 -- Atari-fication 
 ; 
+; WORK IN PROGRESS . . .
+;
+; Updates:
+;
+; --------------------------------------------------------------
+;
+; 2025-08-19
+;
 ; * Some easy stuff first: Deleted the C64-specific work.
 ;
 ; * Start using the include files and proper Atari symbols.
@@ -39,7 +42,21 @@
 ; * Use an overscan screen.  In memory this is a 48 character 
 ;   by 30 line text display. (1440 bytes)
 ;
+; --------------------------------------------------------------
+;
+; 2025-08-24
+;
+; * Using more of the Atari system defines and (my) standard
+;   variable naming.
+;
+; * Changed one-time initialization code into 
+;   direct-load-from-disk behavior, eliminating that code.
+;
+; * optimizations of the pattern list to eliminate math used
+;   to reference data in structures.
+;
 ; ==============================================================
+
 
 ; Let's Begin . . .
 
@@ -83,15 +100,15 @@ NUM_PATTERNS  = 30      ; number of tile patterns the program draws
 
 ; Defining, declaring, and loading data at the same time...
 
-DISPLAY_LIST
-	.byte $42         ; Load Mamory Scan + Mode 2 text
-	.word SCREEN_MEMORY ; Start reading the screen at $0400
+gDISPLAY_LIST
+	.byte $42                  ; Load Mamory Scan + Mode 2 text
+	.word gScreenMemory              ; Start reading the screen
 	.byte $02,$02,$02,$02,$02,$02,$02,$02 ; 8 lines Mode 2 text
 	.byte $02,$02,$02,$02,$02,$02,$02,$02 ; 8 lines Mode 2 text
 	.byte $02,$02,$02,$02,$02,$02,$02,$02 ; 8 lines Mode 2 text
 	.byte $02,$02,$02,$02,$02             ; 5 lines Mode 2 text
-	.byte $41          ; Display List do Vertical Blank and...
-	.word DISPLAY_LIST ; ...start at the beginning of the list.
+	.byte $41           ; Display List do Vertical Blank and...
+	.word gDISPLAY_LIST ; ...start at the beginning of the list.
 
 ; ==============================================================
 
@@ -129,36 +146,7 @@ PATTERN_POINTER .word 0 ; at $fd/$fe
 
 	ORG $3800 
 
-gbStart
-
-; One-Time Initialization.
-
-;	 white background; black text
-
-	 lda #$08    ; Color 0, luminance $8
-	 sta $02c8   ; COLOR4/COLBK border in Mode 2
-	 lda #$0E    ; Color 0, luminance $E
-	 sta $02c6   ; COLOR2/COLPF2 background in Mode 2
-	 lda #$00    ; Color 0, Luminance $0
-	 sta $02c5   ; COLOR1/COLPF1 text luminance in Mode 2
-
-; Last thing specific to the Atari...  
-; We have to start the Atari's custom screen display by updating
-; the ANTIC Display List pointers.  To do this properly we have
-; to guarantee the address bytes are updated in the same frame, 
-; OR the screen DMA must be turned off.  
-; It's easier to do the latter.
-
-	lda #DISABLE_DL_DMA             ; Turn off...
-	sta SDMCTL          ; screen DMA.  Atari SDMCTL
-
-	lda #<DISPLAY_LIST ; Set new Display List address
-	sta SDLSTL          ; Atari SDLSTL
-	lda #>DISPLAY_LIST
-	sta SDLSTH          ; Atari SDLSTH
-
-	lda #ENABLE_DL_DMA|PLAYFIELD_WIDTH_WIDE            ; Turn on...
-	sta SDMCTL         ; screen DMA.  Atari SDMCTL
+bStart
 
 ; ==============================================================
 
@@ -166,36 +154,41 @@ gbStart
 
 	; get pattern pointer (array defined later)
 initdraw
-	lda PATTERN_NUM      ; A = Pattern Number  (to be used as array index) 
-	asl             ; A = A * 2  (pointers are two byte addresses)
-	tax             ; X = A
-	lda PATTERN_LIST,x   ; A = get low byte of pointer from array
+	ldx PATTERN_NUM      ; X = Pattern Number  (to be used as array index) 
+;	asl             ; A = A * 2  (pointers are two byte addresses)
+;	tax             ; X = A
+	lda PATTERN_LIST_LOW,x   ; A = get low byte of pointer from array
 	sta PATTERN_POINTER      ; save in page 0 working variable
-	lda PATTERN_LIST+1,x ; A = get high byte of pointer from array
+	sta PATTERN_LO
+	lda PATTERN_LIST_HIGH,x ; A = get high byte of pointer from array
 	sta PATTERN_POINTER+1    ; save in page 0 working variable
+	sta PATTERN_HI
 
-	; get pattern width and height from the array
-	ldy #0
-	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - Get byte through page 0 pointer
+	lda PATTERN_LIST_WIDTH,x 
+	
+;	; get pattern width and height from the array
+;	ldy #0
+;	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - Get byte through page 0 pointer
 	sta PATTERN_WIDTH        ; Save as the pattern width
-	iny             ; increment to next position
-	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - Get byte through page 0 pointer
+;	iny             ; increment to next position
+;	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - Get byte through page 0 pointer
+	lda PATTERN_LIST_HEIGHT,x
 	sta PATTERN_HEIGHT        ; Save as the pattern height
 
 	; point to actual pattern -- Add 2 to the address to 
 	; skip over the X,Y size values.
-	clc
-	lda PATTERN_POINTER      ; A = Pattern Pointer low byte
-	adc #2          ; A = A + 2  (size of X and Y entries)
-	sta PATTERN_POINTER      ; save adjusted low byte of pattern pointer
-	sta PATTERN_LO       ; and save it again in working area
+;	clc
+;	lda PATTERN_POINTER      ; A = Pattern Pointer low byte
+;	adc #2          ; A = A + 2  (size of X and Y entries)
+;	sta PATTERN_POINTER      ; save adjusted low byte of pattern pointer
+;	sta PATTERN_LO       ; and save it again in working area
 	; Since there has to be a load and store in two variables
 	; for the high byte, there's little to be gained by 
 	; optimizing the handling of high byte.
-	lda PATTERN_POINTER+1    ; A = Pattern Pointer high byte
-	adc #0          ; If carry is set this increments high byte
-	sta PATTERN_POINTER+1    ; save adjusted high byte of pattern pointer
-	sta PATTERN_HI       ; and save it again in working area.
+;	lda PATTERN_POINTER+1    ; A = Pattern Pointer high byte
+;	adc #0          ; If carry is set this increments high byte
+;	sta PATTERN_POINTER+1    ; save adjusted high byte of pattern pointer
+;	sta PATTERN_HI       ; and save it again in working area.
 
 	; initialize the variables for drawing
 	lda #0          ; A = 0
@@ -205,9 +198,9 @@ initdraw
 	sta PATTERN_Y        ; Pattern y
 
 	; Reset working screen pointer to the screen memory address
-	lda #<SCREEN_MEMORY
+	lda #<gScreenMemory
 	sta SCREEN_POINTER
-	lda #>SCREEN_MEMORY
+	lda #>gScreenMemory
 	sta SCREEN_POINTER+1
 
 ; ==============================================================
@@ -284,11 +277,10 @@ nextscrr
 	; Completed drawing screen.   Wait for a keypress.
 
 	lda #255   ; Atari - Clear last keypress. 255 == No Key.
-	sta 764    ; Atari - CH == Most recent key pressed.  
+	sta CH     ; Atari - CH == Most recent key pressed.  
 
 keywait
-;	jsr $ffe4  - C64 wait for keypress
-	lda 764         ; Atari - Read OS register for last keypress
+	lda CH          ; Atari - Read OS register for last keypress
 	cmp #255        ; Is a key pressed?  255 == No Key.
 	beq keywait     ; No, keep looping here.
 ; Note that when someone presses a key on the Atari's keyboard 
@@ -311,18 +303,54 @@ done1
 
 ; ==============================================================
 
-; List of pointers to each structure for the patterns' tile descriptions.
-PATTERN_LIST
-	.word pa,pb,pc,pd,pe,pf
-	.word pg,ph,pi,pl,pm,pn
-	.word po,pp,pq,pr,ps,pt
-	.word pv,pu,px,py,pz,pamp
-	.word p1,p2,p3,p4,p5,p6
+; The original code used pointers with both the low bytes and 
+; high bytes declared together. 
+; Splitting up high byte and low byte into separate tables means 
+; the index into the lists do not need to be multiplied times 2
+; to account for the size of the pair of bytes.
+;
+; ALSO, the original code's pointer are the address of a 
+; data structure for each tile pattern.   By separating the 
+; horizontal(X_) and vertical (Y) into separate lists, the 
+; pointers acquired here are just direct addresses to the 
+; tile pattern.
 
-; Each of the Patterns' tile descriptions.
+; List of pointers to each of the patterns' tile descriptions.
+PATTERN_LIST_LOW
+	mLowByte pa,pb,pc,pd,pe,pf,pg,ph
+	mLowByte pi,pl,pm,pn,po,pp,pq,pr
+	mLowByte ps,pt,pv,pu,px,py,pz,pamp
+	mLowByte p1,p2,p3,p4,p5,p6
+
+PATTERN_LIST_HIGH
+	mHighByte pa,pb,pc,pd,pe,pf,pg,ph
+	mHighByte pi,pl,pm,pn,po,pp,pq,pr
+	mHighByte ps,pt,pv,pu,px,py,pz,pamp
+	mHighByte p1,p2,p3,p4,p5,p6
+
+
+; The original code treated this as a structured data element:
 ; First Byte  = X width
 ; Second Byte = Y height
 ; Remaining   =  X * Y number of bytes containing the tile ID numbers.
+;
+; While that's a cool C-like thing, the 6502 doesn't fit so well, and 
+; the code can be simplified by splitting up the structure parts into 
+; separate lists.   All the X sizes in one list, all the Y sizes in
+; another list.  Then all that is left is the string of tile pattern
+; bytes.
+
+PATTERN_LIST_WIDTH
+	.byte 1,1,2,2,4,2,2,3
+	.byte 4,4,2,4,4,2,4,2
+	.byte 4,4,8,4,6,4,4,4
+	.byte 8,6,10,10,6,12
+
+PATTERN_LIST_HEIGHT
+	.byte 1,2,2,2,4,2,4,3
+	.byte 4,4,2,4,2,2,2,1
+	.byte 1,1,8,4,6,4,2,4
+	.byte 8,6,10,10,6,12
 
 ;For Reference, the tile IDs again:
 ; On Atari:
@@ -331,86 +359,85 @@ PATTERN_LIST
 ; 2 == internal code $CA -- upper right triangle (inverse video $4A)
 ; 3 == internal code $48 -- lower right triangle 
 
-pa
-	.byte 1,1
+pa  ; 1,1
 	.byte 0
-pb
-	.byte 1,2
+
+pb  ; 1,2
 	.byte 0,2
-pc
-	.byte 2,2
+
+pc  ; 2,2
 	.byte 0,2
 	.byte 2,0
-pd
-	.byte 2,2
+
+pd  ; 2,2
 	.byte 1,0
 	.byte 2,3
-pe
-	.byte 4,4
+
+pe  ; 4,4
 	.byte 1,2,3,0
 	.byte 2,1,0,3
 	.byte 3,0,1,2
 	.byte 0,3,2,1
-pf
-	.byte 2,2
+
+pf  ; 2,2
 	.byte 1,2
 	.byte 0,3
-pg
-	.byte 2,4
+
+pg  ; 2,4
 	.byte 0,2
 	.byte 2,0
 	.byte 2,0
 	.byte 0,2
-ph
-	.byte 3,3
+
+ph  ; 3,3
 	.byte 1,3,3
 	.byte 3,1,3
 	.byte 3,3,1
-pi
-	.byte 4,4
+
+pi  ; 4,4
 	.byte 2,0,0,2
 	.byte 0,2,2,0
 	.byte 0,2,2,0
 	.byte 2,0,0,2
-pl
-	.byte 4,4
+
+pl  ; 4,4
 	.byte 3,0,3,0
 	.byte 2,3,0,1
 	.byte 3,2,1,0
 	.byte 2,1,2,1
-pm
-	.byte 2,2
+
+pm  ; 2,2
 	.byte 1,2
 	.byte 2,1
-pn
-	.byte 4,4
+
+pn  ; 4,4
 	.byte 1,0,3,2
 	.byte 2,3,0,1
 	.byte 3,2,1,0
 	.byte 0,1,2,3
-po
-	.byte 4,2
+
+po  ; 4,2
 	.byte 3,0,1,2
 	.byte 1,2,3,0
-pp
-	.byte 2,2
+
+pp  ; 2,2
 	.byte 1,2
 	.byte 3,0
-pq
-	.byte 4,2
+
+pq  ; 4,2
 	.byte 3,3,0,0
 	.byte 1,1,2,2
-pr
-	.byte 2,1
+
+pr  ; 2,1
 	.byte 3,0
-ps
-	.byte 4,1
+
+ps  ; 4,1
 	.byte 3,0,1,2
-pt
-	.byte 4,1
+
+pt  ; 4,1
 	.byte 1,3,0,2
-pv
-	.byte 8,8
+
+pv  ; 8,8
 	.byte 2,0,3,0,2,0,1,0
 	.byte 0,3,0,2,0,1,0,2
 	.byte 3,0,2,0,1,0,2,0
@@ -419,38 +446,38 @@ pv
 	.byte 0,1,0,2,0,3,0,2
 	.byte 1,0,2,0,3,0,2,0
 	.byte 0,2,0,3,0,2,0,1
-pu
-	.byte 4,4
+
+pu  ; 4,4
 	.byte 1,3,0,2
 	.byte 3,0,2,1
 	.byte 0,2,1,3
 	.byte 2,1,3,0
-px
-	.byte 6,6
+
+px  ; 6,6
 	.byte 2,0,3,0,0,2
 	.byte 2,1,2,2,0,0
 	.byte 3,0,0,2,2,0
 	.byte 2,2,0,0,2,1
 	.byte 0,2,2,0,3,0
 	.byte 0,0,2,1,2,2
-py
-	.byte 4,4
+
+py  ; 4,4
 	.byte 1,3,0,2
 	.byte 3,1,2,0
 	.byte 2,0,3,1
 	.byte 0,2,1,3
-pz
-	.byte 4,2
+
+pz  ; 4,2
 	.byte 1,2,0,3
 	.byte 3,1,2,0
-pamp
-	.byte 4,4
+
+pamp ; 4,4
 	.byte 1,3,2,0
 	.byte 3,1,0,2
 	.byte 0,2,3,1
 	.byte 2,0,1,3
-p1
-	.byte 8,8
+
+p1  ; 8,8
 	.byte 0,2,0,2,1,3,1,3
 	.byte 1,3,1,3,0,2,0,2
 	.byte 3,1,3,1,2,0,2,0
@@ -459,16 +486,16 @@ p1
 	.byte 2,0,2,0,3,1,3,1
 	.byte 0,2,0,2,1,3,1,3
 	.byte 2,0,2,0,3,1,3,1
-p2
-	.byte 6,6
+
+p2  ; 6,6
 	.byte 3,0,2,1,3,0
 	.byte 0,2,0,3,1,3
 	.byte 2,0,1,2,3,1
 	.byte 3,1,0,3,2,0
 	.byte 1,3,1,2,0,2
 	.byte 2,1,3,0,2,1
-p3
-	.byte 10,10
+
+p3  ; 10,10
 	.byte 1,2,1,2,0,2,3,0,1,3
 	.byte 3,0,3,0,2,0,2,1,3,1
 	.byte 1,2,1,2,0,2,0,3,1,3
@@ -479,8 +506,8 @@ p3
 	.byte 0,3,0,3,1,3,2,1,0,2
 	.byte 2,1,2,1,3,0,3,0,3,0
 	.byte 3,0,3,0,2,1,2,1,2,1
-p4
-	.byte 10,10
+
+p4  ; 10,10
 	.byte 1,3,0,2,0,2,2,1,1,3
 	.byte 3,1,2,0,2,0,2,1,3,1
 	.byte 1,1,2,2,0,2,0,3,1,3
@@ -491,16 +518,16 @@ p4
 	.byte 0,2,1,3,1,3,3,0,0,2
 	.byte 2,0,3,1,3,3,1,2,0,0
 	.byte 3,1,2,0,2,2,0,3,1,1
-p5
-	.byte 6,6
+
+p5  ; 6,6
 	.byte 3,1,2,1,2,0
 	.byte 1,3,0,3,0,2
 	.byte 0,2,3,0,1,3
 	.byte 1,3,2,1,0,2
 	.byte 0,2,1,2,1,3
 	.byte 2,0,3,0,3,1
-p6
-	.byte 12,12
+
+p6  ; 12,12
 	.byte 0,3,0,1,2,1,2,1,2,3,0,3
 	.byte 2,2,1,0,3,3,0,0,3,2,1,1
 	.byte 0,2,0,1,3,1,2,0,2,3,1,3
@@ -514,30 +541,66 @@ p6
 	.byte 1,1,2,3,0,0,3,3,0,1,2,2
 	.byte 3,0,3,2,1,2,1,2,1,0,3,0
 
+
 ; ==============================================================
 
-; Screen memory requires more than 1K now.  So to prevent 
-; crossing a 4K boundary, align the next memory reference to a
-; 2K boundary.   2K + 1440 bytes is less than a 4K boundary.
+; Screen memory requires more than 1K now that overscan is 
+; involved.  So to prevent crossing a 4K boundary, align the 
+; next memory reference to a 2K boundary.   2K + 1440 bytes is 
+; less than a 4K boundary.
 
 	.align 2048 
 
-; We don't need to reserve space, because the display list will
-; just start reading here and keep on going.   The tile writing
-; code will just do the same and assume this memory is available.
+; We don't need to explicitly reserve space. 
+; The display list will just start reading here and continue.   
+; The tile writing code will do the same and assume this memory 
+; is available.
 
-SCREEN_MEMORY 
+gScreenMemory
+
 
 ; ==============================================================
+
+; Codeless, Poking-From-Disk. 
+;
+; Exploit the Atari's segmented binary loading format to perform
+; the one-time initialization code.   In the original code this
+; was a series of LDA/STA instructions.   Here we are getting 
+; the file loader to lay these bytes directly into memory from 
+; the disk file.
+
+; One-Time Initialization.
+
+	ORG COLOR0           ; Load all the color registers.
+	
+	.byte $00            ; COLOR0/COLPF0 (not used in Mode 2).
+	.byte COLOR_BLACK    ; COLOR1/COLPF1 - text luminance in Mode 2. Color 0, Luminance $0 
+	.byte COLOR_BLACK|$E ; COLOR2/COLPF2 - background in Mode 2.     Color 0, Luminance $E
+	.byte $00            ; COLOR3/COLPF3 (not used in Mode 2).
+	.byte COLOR_BLACK|$8 ; COLOR4/COLBK  - border in Mode 2.  Color 0, Luminance $8
+
+
+; We have to start the Atari's custom screen display by updating
+; the ANTIC Display List pointers.  To do this properly we have
+; to guarantee the address bytes are updated in the same frame, 
+; OR the screen DMA must be turned off.  
+; It's easier to do the latter.
+
+	mDiskPoke SDMCTL,DISABLE_DL_DMA             ; Turn off...screen DMA.
+
+	mDiskDPoke SDLSTL,gDISPLAY_LIST             ; Set new Display List address
+
+	mDiskPoke SDMCTL,ENABLE_DL_DMA|PLAYFIELD_WIDTH_WIDE ; Turn on screen DMA. 
+
 
 ; This is how we make the executable automatically run on the 
 ; Atari.  Store the address of the start of the code to run in
 ; DOS_RUN_ADDR/$02E0.  When file loading completes DOS will 
 ; execute this address.
 
-	ORG $02e0    ; DOS_RUN_ADDR
+	ORG DOS_RUN_ADDR
 
-	.word gbStart
+	.word bStart
 
 	END
 
