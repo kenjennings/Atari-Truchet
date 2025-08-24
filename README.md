@@ -47,14 +47,16 @@ code remains nearly identical.
 
 Version 01:  truchet01.asm
 
-Adding Atari-specific features.
+Atari-fication... Adding Atari-specific features.
 
 Code now depends on the Atari includes for sensible symbols and other goodies.   
 Get them here:
 https://github.com/kenjennings/Atari-Mads-Includes
 
-Atari-fication...
- 
+---
+
+Update 2025-08-19
+
 * Some easy stuff first: Deleted the C64-specific work.
 
 * Start using the include files and proper Atari symbols.
@@ -63,10 +65,17 @@ Atari-fication...
 
 ---
 
-To Be Continued . . . . .
+Update 2025-08-24
+
+* Using more of the Atari system defines and (my) standard variable naming.
+
+* Changed one-time initialization code into direct-load-from-disk behavior, eliminating that code.
+
+* Optimizations of the pattern list to eliminate math used to reference data in structures.
 
 ---
 
+To Be Continued . . . . .
 
 ---
 
