@@ -47,13 +47,15 @@
 ; 2025-08-24
 ;
 ; * Using more of the Atari system defines and (my) standard
-;   variable naming.
+;   variable naming conventions.
 ;
 ; * Changed one-time initialization code into 
 ;   direct-load-from-disk behavior, eliminating that code.
 ;
 ; * optimizations of the pattern list to eliminate math used
 ;   to reference data in structures.
+;
+; * optimized code around pointer use/math.
 ;
 ; ==============================================================
 
@@ -71,6 +73,7 @@
 
 	ICL "macros.asm" ; Some memory tricks
 	
+	
 ; ==============================================================
 
 ; Program Defines
@@ -79,6 +82,7 @@ SCREEN_WIDTH  = 48      ; Screen width in characters.
 SCREEN_HEIGHT = 30      ; screen height in lines.
 
 NUM_PATTERNS  = 30      ; number of tile patterns the program draws
+
 
 ; ==============================================================
 
@@ -100,31 +104,30 @@ NUM_PATTERNS  = 30      ; number of tile patterns the program draws
 
 ; Defining, declaring, and loading data at the same time...
 
-gDISPLAY_LIST
-	.byte $42                  ; Load Mamory Scan + Mode 2 text
+zDisplayList
+	.byte $42                  ; Load Memory Scan + Mode 2 text
 	.word gScreenMemory              ; Start reading the screen
 	.byte $02,$02,$02,$02,$02,$02,$02,$02 ; 8 lines Mode 2 text
 	.byte $02,$02,$02,$02,$02,$02,$02,$02 ; 8 lines Mode 2 text
 	.byte $02,$02,$02,$02,$02,$02,$02,$02 ; 8 lines Mode 2 text
 	.byte $02,$02,$02,$02,$02             ; 5 lines Mode 2 text
-	.byte $41           ; Display List do Vertical Blank and...
-	.word gDISPLAY_LIST ; ...start at the beginning of the list.
+	.byte $41                        ; Do Vertical Blank and...
+	.word zDisplayList ; ...start at the beginning of the list.
 
 ; ==============================================================
 
 ; Program Variables in Page 0
 
-	ORG $EE
+	ORG $F0
 
-SCREEN_X       .byte 0 ; at $ee - screen x position
-SCREEN_Y       .byte 0 ; at $ef - screen y position
-PATTERN_NUM    .byte 0 ; at $f0 - current pattern number
-PATTERN_X      .byte 0 ; at $f1
-PATTERN_Y      .byte 0 ; at $f2
-PATTERN_WIDTH  .byte 0 ; at $f3
-PATTERN_HEIGHT .byte 0 ; at $f4
-PATTERN_LO     .byte 0 ; at $f5
-PATTERN_HI     .byte 0 ; at $f6
+zPatternNumber       .byte 0 ; at $f0 - reference, current pattern number
+zPatternWidth        .byte 0 ; at $f1 - reference, width (X) of current pattern
+zPatternHeight       .byte 0 ; at $f2 - reference, height (Y) of current pattern
+
+zPatternX            .byte 0 ; at $f3 - working X position in pattern
+zPatternY            .byte 0 ; at $f4 - working Y position in pattern
+zPatternPointer      .word 0 ; at $f5/$f6 - working pointer to pattern.
+zPatternPointerCopy .word 0 ; at $f7/$f8 - backup used to reset pointer to start
 
 
 ; On Atari:
@@ -133,10 +136,25 @@ PATTERN_HI     .byte 0 ; at $f6
 ; 2 == internal code $CA -- upper right triangle (inverse video $4A)
 ; 3 == internal code $48 -- lower right triangle 
 
-TILE_CODES  .byte $4A,$C8,$CA,$48 ; at $f7 to $fa
+zaTileCodes
+	.byte $4A,$C8,$CA,$48 ; at $f9 to $$fc
 
-SCREEN_POINTER  .word 0 ; at $fb/$fc
-PATTERN_POINTER .word 0 ; at $fd/$fe
+
+; The original code declared a pointer to screen memory.  The 
+; Atari OS already gives us a page zero value for this, SAVMSC.
+; Likewise, the original code declared current screen X and Y
+; position values in page 0. The Atari OS already defines 
+; values like these as ROWCRS (Y) and COLCRS (X).
+;
+; Since the program does not use OS routines for the S: device,
+; the program is free to use/abuse these page zero values.
+; Therefore, here repurpose the OS page 0 screen device  values 
+; for the program's use:
+
+zScreenPointer = SAVMSC ; word. Address of first byte of screen memory.
+zScreenY       = ROWCRS ; byte. Current cursor row (Y) 
+zScreenX       = COLCRS ; word, but we're only using low byte. Current cursor column (X)
+
 
 ; ==============================================================
 
@@ -146,160 +164,153 @@ PATTERN_POINTER .word 0 ; at $fd/$fe
 
 	ORG $3800 
 
+; the part of the program that loops forever . . .
+
 bStart
 
 ; ==============================================================
 
-; the part of the program that loops forever . . .
+	; Set up the variables for this pattern (based on Pattern number)
 
-	; get pattern pointer (array defined later)
-initdraw
-	ldx PATTERN_NUM      ; X = Pattern Number  (to be used as array index) 
-;	asl             ; A = A * 2  (pointers are two byte addresses)
-;	tax             ; X = A
-	lda PATTERN_LIST_LOW,x   ; A = get low byte of pointer from array
-	sta PATTERN_POINTER      ; save in page 0 working variable
-	sta PATTERN_LO
-	lda PATTERN_LIST_HIGH,x ; A = get high byte of pointer from array
-	sta PATTERN_POINTER+1    ; save in page 0 working variable
-	sta PATTERN_HI
-
-	lda PATTERN_LIST_WIDTH,x 
+	ldx zPatternNumber        ; X = Pattern Number  (to be used as array index) 
 	
-;	; get pattern width and height from the array
-;	ldy #0
-;	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - Get byte through page 0 pointer
-	sta PATTERN_WIDTH        ; Save as the pattern width
-;	iny             ; increment to next position
-;	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - Get byte through page 0 pointer
-	lda PATTERN_LIST_HEIGHT,x
-	sta PATTERN_HEIGHT        ; Save as the pattern height
+	lda gaPatternListLow,x    ; A = get low byte of pointer from array
+	sta zPatternPointer       ; save in page 0 working variable
+	sta zPatternPointerCopy   ; Save in the backup when needing to reset later.
+	
+	lda gaPatternListHigh,x   ; A = get high byte of pointer from array
+	sta zPatternPointer+1     ; save in page 0 working variable
+	sta zPatternPointerCopy+1 ; Save in the backup when needing to reset later.
 
-	; point to actual pattern -- Add 2 to the address to 
-	; skip over the X,Y size values.
-;	clc
-;	lda PATTERN_POINTER      ; A = Pattern Pointer low byte
-;	adc #2          ; A = A + 2  (size of X and Y entries)
-;	sta PATTERN_POINTER      ; save adjusted low byte of pattern pointer
-;	sta PATTERN_LO       ; and save it again in working area
-	; Since there has to be a load and store in two variables
-	; for the high byte, there's little to be gained by 
-	; optimizing the handling of high byte.
-;	lda PATTERN_POINTER+1    ; A = Pattern Pointer high byte
-;	adc #0          ; If carry is set this increments high byte
-;	sta PATTERN_POINTER+1    ; save adjusted high byte of pattern pointer
-;	sta PATTERN_HI       ; and save it again in working area.
+	lda gaPatternListWidth,x  ; A = get pattern width from the array
+	sta zPatternWidth         ; Save as the pattern width
 
-	; initialize the variables for drawing
-	lda #0          ; A = 0
-	sta SCREEN_X        ; Screen X
-	sta SCREEN_Y        ; Screen Y
-	sta PATTERN_X        ; Pattern X
-	sta PATTERN_Y        ; Pattern y
+	lda gaPatternListHeight,x ; A = get pattern height from the array
+	sta zPatternHeight        ; Save as the pattern height
+
+
+	; initialize/zero the working variables for drawing
+	lda #0                    ; A = 0
+	sta zScreenX
+	sta zScreenY
+	sta zPatternX
+	sta zPatternY
 
 	; Reset working screen pointer to the screen memory address
 	lda #<gScreenMemory
-	sta SCREEN_POINTER
+	sta zScreenPointer
 	lda #>gScreenMemory
-	sta SCREEN_POINTER+1
+	sta zScreenPointer+1
+
 
 ; ==============================================================
 
 	; Draw patterns into screen memory until finished...
-drawloop
-	ldy PATTERN_X        ; Y = Pattern X position
-	lda (PATTERN_POINTER),Y  ; A = *(PATTERN_POINTER + Y) - tile ID number from pattern
-	tax             ; X = tile ID number
-	lda TILE_CODES,x     ; A =  character from tile array ( tile[ x ] )
-	ldy SCREEN_X        ; Y = Screen X position
-	sta (SCREEN_POINTER),y  ; Screen byte *(SCREEN_POINTER + Y) = tile character 
+bDrawLoop
+
+	; Get character from tile array and plot at current screen position...
+	ldy zPatternX           ; Y = Pattern X position
+	lda (zPatternPointer),Y ; A = *(Pattern Pointer + Y) -- tile ID number from pattern
+	tax                     ; X = tile ID number from pattern.
+	lda zaTileCodes,x       ; A = character from tile array ( tile[ x ] )
+	ldy zScreenX            ; Y = Screen X position
+	sta (zScreenPointer),y  ; Screen byte *(Screen Pointer + Y) = tile character 
 
 	; Next pattern column
-	inc PATTERN_X        ; Pattern X++
-	lda PATTERN_X        ; A = Pattern X
-	cmp PATTERN_WIDTH        ; If A == Pattern Width ?
-	bcc nextscrc    ; No, Continue with next screen column
-	lda #0          ; A = 0 
-	sta PATTERN_X        ; Reset Pattern X to start
+	inc zPatternX           ; Pattern X++
+	lda zPatternX           ; A = Pattern X
+	cmp zPatternWidth       ; If A == Pattern Width ?
+	bcc bNextScreenColumn   ; No, Continue with next screen column
+	lda #0                  ; A = 0 
+	sta zPatternX           ; Reset Pattern X to start
 
 	; Move to next screen column
-nextscrc
-	inc SCREEN_X        ; Screen X++
-	lda SCREEN_X        ; A = Screen X
-	cmp #SCREEN_WIDTH       ; If A == Screen X width ?
-	bcc drawloop    ; No, Continue with drawing the next position
+bNextScreenColumn
 
-	; Completed screen Row... Reset X positions
-	lda #0          ; A = 0
-	sta PATTERN_X        ; Reset Pattern X to start
-	sta SCREEN_X        ; Reset Screen X to start
+	inc zScreenX            ; Screen X++
+	lda zScreenX            ; A = Screen X
+	cmp #SCREEN_WIDTH       ; If A == Screen X width ?
+	bcc bDrawLoop           ; No, Continue with drawing the next position
+
+	; Completed screen Row... Reset X positions for screen and pattern
+	lda #0                  ; A = 0
+	sta zPatternX           ; Reset Pattern X to start
+	sta zScreenX            ; Reset Screen X to start
 
 	; Completed screen Row... Move to next pattern row
 	clc
-	lda PATTERN_POINTER      ; A = Pattern pointer low byte
-	adc PATTERN_WIDTH        ; A = A + Pattern Width
-	sta PATTERN_POINTER      ; Save new  low byte in Pattern pointer
-	lda PATTERN_POINTER+1    ; A = Pattern pointer high bytye
-	adc #0          ; If carry was set during low byte addition, add one
-	sta PATTERN_POINTER+1    ; Save new  high byte in Pattern pointer
+	lda zPatternPointer      ; A = Pattern pointer low byte
+	adc zPatternWidth        ; A = A + Pattern Width
+	sta zPatternPointer      ; Save new  low byte in Pattern pointer
+	bcc bNextPatternRow      ; If no carry, then skip high byte treatment
+	inc zPatternPointer+1    ; Carry Set, so increment high byte.
 
-	inc PATTERN_Y        ; Pattern Y++
-	lda PATTERN_Y        ; A = Pattern Y
-	cmp PATTERN_HEIGHT        ; If A == Pattern Y height ?
-	bcc nextscrr    ; No, Continue with drawing the next screen row
+	; Move to next pattern row.
+bNextPatternRow
+
+	inc zPatternY            ; Pattern Y++
+	lda zPatternY            ; A = Pattern Y
+	cmp zPatternHeight       ; If A == Pattern Y height ?
+	bcc bNextScreenRow       ; No, Continue with drawing the next screen row
 
 	; Completed pattern, reset to start again
-	lda #0          ; A = 0
-	sta PATTERN_Y        ; Reset Pattern Y to start
+	lda #0                   ; A = 0
+	sta zPatternY            ; Reset Pattern Y to start
 
-	lda PATTERN_LO       ; Copy Pattern pointer...
-	sta PATTERN_POINTER      ; to low byte working pointer
-	lda PATTERN_HI       ; Copy Pattern pointer...
-	sta PATTERN_POINTER+1    ; to high byte working pointer
+	lda zPatternPointerCopy  ; Copy the saved Pattern pointer...
+	sta zPatternPointer      ; to the working variable.
+	lda zPatternPointerCopy+1
+	sta zPatternPointer+1
 
 	; Move to next screen row
-nextscrr
-	clc
-	lda SCREEN_POINTER      ; A = Screen pointer low byte
-	adc #SCREEN_WIDTH       ; A = A + Screen Width
-	sta SCREEN_POINTER      ; Save new  low byte in Screen pointer
-	lda SCREEN_POINTER+1    ; A = Screen pointer high bytye
-	adc #0          ; If carry was set during low byte addition, add one
-	sta SCREEN_POINTER+1    ; Save new  high byte in Screen pointer
+bNextScreenRow
 
-	inc SCREEN_Y        ; Screen Y++
-	lda SCREEN_Y        ; A = Screen Y
-	cmp #SCREEN_HEIGHT       ; If A == Screen Y height ?
-	bcc drawloop    ; No, Continue with drawing the next position
+	clc
+	lda zScreenPointer      ; A = Screen pointer low byte
+	adc #SCREEN_WIDTH       ; A = A + Screen Width
+	sta zScreenPointer      ; Save new  low byte in Screen pointer
+	bcc bNextScreenY        ; If no carry, then skip high byte treatment.
+	inc zScreenPointer+1    ; Carry set, so increment high byte.
+
+	; Update screen Y poisiton.
+bNextScreenY
+
+	inc zScreenY            ; Screen Y++
+	lda zScreenY            ; A = Screen Y
+	cmp #SCREEN_HEIGHT      ; If A == Screen Y height ?
+	bcc bDrawLoop           ; No, Continue with drawing the next position
 
 ; ==============================================================
 
 	; Completed drawing screen.   Wait for a keypress.
 
-	lda #255   ; Atari - Clear last keypress. 255 == No Key.
-	sta CH     ; Atari - CH == Most recent key pressed.  
+	lda #255                ; Clear last keypress. 255 = No Key press.
+	sta CH                  ; CH -- the most recent key pressed.  
 
-keywait
-	lda CH          ; Atari - Read OS register for last keypress
-	cmp #255        ; Is a key pressed?  255 == No Key.
-	beq keywait     ; No, keep looping here.
+bKeyWait
+	lda CH                  ; A = CH -- Read OS register for last keypress
+	cmp #255                ; Is a key pressed?  255 == No Key.
+	beq bKeyWait            ; No, keep looping here.
+	
 ; Note that when someone presses a key on the Atari's keyboard 
 ; the color cycling Attract Mode will also reset.
+
 
 ; ==============================================================
 
 	; Run the next pattern after a key is pressed
-	inc PATTERN_NUM      ; Pattern Number++
-	lda PATTERN_NUM      ; A = Pattern Number
-	cmp #NUM_PATTERNS     ; If A == the end of the pattern list ?
-	bcc done1       ; No.  Skip resetting the pattern number
+	
+	inc zPatternNumber      ; Pattern Number++
+	lda zPatternNumber      ; A = Pattern Number
+	cmp #NUM_PATTERNS       ; If A == the end of the pattern list ?
+	bcc bGoToStart          ; No.  Skip resetting the pattern number
 
-	; wrap back to the first pattern.
-	lda #0          ; A = 0
-	sta PATTERN_NUM      ; Save to Pattern Number
+	lda #0                  ; A = 0 -- go back to first pattern
+	sta zPatternNumber      ; Save to Pattern Number
 
-done1
-	jmp initdraw    ; Back to the beginning
+bGoToStart
+	jmp bStart    ; Back to the beginning
+
 
 ; ==============================================================
 
@@ -315,14 +326,16 @@ done1
 ; pointers acquired here are just direct addresses to the 
 ; tile pattern.
 
+
 ; List of pointers to each of the patterns' tile descriptions.
-PATTERN_LIST_LOW
+
+gaPatternListLow
 	mLowByte pa,pb,pc,pd,pe,pf,pg,ph
 	mLowByte pi,pl,pm,pn,po,pp,pq,pr
 	mLowByte ps,pt,pv,pu,px,py,pz,pamp
 	mLowByte p1,p2,p3,p4,p5,p6
 
-PATTERN_LIST_HIGH
+gaPatternListHigh
 	mHighByte pa,pb,pc,pd,pe,pf,pg,ph
 	mHighByte pi,pl,pm,pn,po,pp,pq,pr
 	mHighByte ps,pt,pv,pu,px,py,pz,pamp
@@ -340,13 +353,13 @@ PATTERN_LIST_HIGH
 ; another list.  Then all that is left is the string of tile pattern
 ; bytes.
 
-PATTERN_LIST_WIDTH
+gaPatternListWidth
 	.byte 1,1,2,2,4,2,2,3
 	.byte 4,4,2,4,4,2,4,2
 	.byte 4,4,8,4,6,4,4,4
 	.byte 8,6,10,10,6,12
 
-PATTERN_LIST_HEIGHT
+gaPatternListHeight
 	.byte 1,2,2,2,4,2,4,3
 	.byte 4,4,2,4,2,2,2,1
 	.byte 1,1,8,4,6,4,2,4
@@ -551,12 +564,15 @@ p6  ; 12,12
 
 	.align 2048 
 
-; We don't need to explicitly reserve space. 
-; The display list will just start reading here and continue.   
-; The tile writing code will do the same and assume this memory 
+; Since nothing follows the screen memory the program does not 
+; need to explicitly reserve space or declare the .bytes used 
+; for screen memory. 
+; The display list will just start reading from this location 
+; here and continue forward.   
+; The tile writing code will do the same assuming this memory 
 ; is available.
 
-gScreenMemory
+gScreenMemory     ; Just defining where this occurs in memory.
 
 
 ; ==============================================================
@@ -574,7 +590,7 @@ gScreenMemory
 	ORG COLOR0           ; Load all the color registers.
 	
 	.byte $00            ; COLOR0/COLPF0 (not used in Mode 2).
-	.byte COLOR_BLACK    ; COLOR1/COLPF1 - text luminance in Mode 2. Color 0, Luminance $0 
+	.byte COLOR_BLACK|$0 ; COLOR1/COLPF1 - text luminance in Mode 2. Color 0, Luminance $0 
 	.byte COLOR_BLACK|$E ; COLOR2/COLPF2 - background in Mode 2.     Color 0, Luminance $E
 	.byte $00            ; COLOR3/COLPF3 (not used in Mode 2).
 	.byte COLOR_BLACK|$8 ; COLOR4/COLBK  - border in Mode 2.  Color 0, Luminance $8
@@ -588,7 +604,7 @@ gScreenMemory
 
 	mDiskPoke SDMCTL,DISABLE_DL_DMA             ; Turn off...screen DMA.
 
-	mDiskDPoke SDLSTL,gDISPLAY_LIST             ; Set new Display List address
+	mDiskDPoke SDLSTL,zDisplayList              ; Set new Display List address
 
 	mDiskPoke SDMCTL,ENABLE_DL_DMA|PLAYFIELD_WIDTH_WIDE ; Turn on screen DMA. 
 
