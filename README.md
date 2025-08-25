@@ -16,7 +16,7 @@ The "8-bit Show And Tell" YouTube channel is here: https://www.youtube.com/@8_Bi
 
 ---
 
-Version 00:  truchet00.asm
+Version 00:  truchet00.asm/truchet00.xex
 
 The C64 Truchet demo ported to the Atari 8-bit computers. This initial version is a direct port with as few changes possible to make the program function on the Atari the same as the C64. 
 Seriously, intentionally went out of my way to make as few 
@@ -45,7 +45,7 @@ code remains nearly identical.
 
 ---
 
-Version 01:  truchet01.asm
+Version 01:  truchet01.asm/truchet01.xex
 
 Atari-fication... Adding Atari-specific features.
 
@@ -71,7 +71,7 @@ Update 2025-08-24
 
 * Changed one-time initialization code into direct-load-from-disk behavior, eliminating that code.
 
-* Optimizations of the pattern list to eliminate math used to reference data in structures.  (So far, this has reduced the program by about 32 bytes.)
+* Optimizations of the pattern list to eliminate math used to reference data in structures.  (So far, this has reduced the assembled program by about 32 bytes from the original V00 version.)
 
 ---
 
