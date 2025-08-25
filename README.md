@@ -71,7 +71,7 @@ Update 2025-08-24
 
 * Changed one-time initialization code into direct-load-from-disk behavior, eliminating that code.
 
-* Optimizations of the pattern list to eliminate math used to reference data in structures.
+* Optimizations of the pattern list to eliminate math used to reference data in structures.  (So far, this has reduced the program by about 32 bytes.)
 
 ---
 
