@@ -41,7 +41,7 @@ code remains nearly identical.
 
 | **Truchet Tiles Demo - Version 01 - Atari-fication WORK IN PROGRESS** |
 | ------- |
-| ![TRUCHET_V01](truchet01.png) | 
+| ![TRUCHET_V01](truchet01-2.png) | 
 
 ---
 
@@ -78,6 +78,7 @@ Update 2025-08-24
 Update 2025-08-30
 
  * The tile pattern can be changed to the next pattern by using the right arrow, and previous pattern using the left arrow.
+   (Tested on atari800 emulator running on a linux laptop and the arrow keys worked fine.   However, Altirra on another laptop would not translate the laptop arrows to Atari's cursor control keys for some reason. Altirra does respond to the slash and plus keys which makes no sense to me.)
  
  * Console Key Support:
    Option = cycle to next base color
