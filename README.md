@@ -75,6 +75,17 @@ Update 2025-08-24
 
 ---
 
+Update 2025-08-30
+
+ * The tile pattern can be changed to the next pattern by using the right arrow, and previous pattern using the left arrow.
+ 
+ * Console Key Support:
+   Option = cycle to next base color
+   Select = Toggle dark/light v dark/light for tiles
+   Start  = Turn on the Attract mode (turned off by any regular keyboard key.)
+
+---
+
 To Be Continued . . . . .
 
 ---
