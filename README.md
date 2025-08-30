@@ -78,7 +78,7 @@ Update 2025-08-24
 Update 2025-08-30
 
  * The tile pattern can be changed to the next pattern by using the right arrow, and previous pattern using the left arrow.
-   (Tested on atari800 emulator running on a linux laptop and the arrow keys worked fine.   However, Altirra on a laptop running Windows would not translate the laptop arrows to Atari's cursor control keys for some reason. Altirra does respond to the slash and plus keys which makes no sense to me.)
+   (Tested on atari800 emulator running on a linux laptop and Altirra on a laptop running Windows.  The arrow keys work fine.  If you mess with the arrow key input mapping remember what you did to yourself.)
  
  * Console Key Support:
    Option = cycle to next base color
