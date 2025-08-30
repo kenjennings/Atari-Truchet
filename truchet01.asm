@@ -55,8 +55,21 @@
 ; * optimizations of the pattern list to eliminate math used
 ;   to reference data in structures.
 ;
-; * optimized code around pointer use/math.
+; * optimized code around pointer use/math.  Optimizations have
+;   reduced the assembled size by about 32 bytes.
 ;
+; --------------------------------------------------------------
+;
+; 2025-08-30
+;
+; * Tile pattern can be changed to the next pattern by using the
+;   right arrow, and previous pattern using the left arrow.
+; 
+; * Console Key Support:
+;   Option = cycle to next base color
+;   Select = Toggle dark/light v dark/light for tiles
+;   Start  = Turn on the Attract mode (turned off by any 
+;             regular keyboard key.)
 ; ==============================================================
 
 
@@ -127,8 +140,9 @@ zPatternHeight       .byte 0 ; at $f2 - reference, height (Y) of current pattern
 zPatternX            .byte 0 ; at $f3 - working X position in pattern
 zPatternY            .byte 0 ; at $f4 - working Y position in pattern
 zPatternPointer      .word 0 ; at $f5/$f6 - working pointer to pattern.
-zPatternPointerCopy .word 0 ; at $f7/$f8 - backup used to reset pointer to start
-
+zPatternPointerCopy  .word 0 ; at $f7/$f8 - backup used to reset pointer to start
+zBaseColor           .byte 0 ; at $f9    - color for screen.
+zTileColorType       .byte 0 ; at $fa    - 0 = Tiles dark/light. 1 = Tiles light/dark. 
 
 ; On Atari:
 ; 0 == internal code $4A -- lower left triangle.
@@ -137,7 +151,7 @@ zPatternPointerCopy .word 0 ; at $f7/$f8 - backup used to reset pointer to start
 ; 3 == internal code $48 -- lower right triangle 
 
 zaTileCodes
-	.byte $4A,$C8,$CA,$48 ; at $f9 to $$fc
+	.byte $4A,$C8,$CA,$48 ; at $fb to $fe
 
 
 ; The original code declared a pointer to screen memory.  The 
@@ -162,11 +176,11 @@ zScreenX       = COLCRS ; word, but we're only using low byte. Current cursor co
 
 ; Just pick any spot conveniently after DOS...
 
-	ORG $3800 
+	ORG $3400 
 
 ; the part of the program that loops forever . . .
 
-bStart
+StartTruchet
 
 ; ==============================================================
 
@@ -283,35 +297,277 @@ bNextScreenY
 ; ==============================================================
 
 	; Completed drawing screen.   Wait for a keypress.
+	; Quick and Dirty Version.  This needs to run a debounce 
+	; behavior for the Console keys before accepting the input.
+	
+	; Note that when someone presses a key on the Atari's keyboard 
+    ; the color cycling Attract Mode will also reset.
+
+bMonitorInputLoop
 
 	lda #255                ; Clear last keypress. 255 = No Key press.
 	sta CH                  ; CH -- the most recent key pressed.  
 
-bKeyWait
-	lda CH                  ; A = CH -- Read OS register for last keypress
-	cmp #255                ; Is a key pressed?  255 == No Key.
-	beq bKeyWait            ; No, keep looping here.
+	jsr WaitTOF             ; Wait for next frame to start.
 	
-; Note that when someone presses a key on the Atari's keyboard 
-; the color cycling Attract Mode will also reset.
+; Checking the keys . . .	
+	jsr KeyboardInput      ; Yes.  Skip out to processing the key.
+	bne bGoToStart          ; 0 = no key input.   1= key input, so redraw.
+
+bTestConsoleInput           ; No key input, so test console.
+	jsr ProcessConsoleKeys ; Console changes color, so redraw is not needed.
+
+	jmp bMonitorInputLoop
+
+bGoToStart
+	jmp StartTruchet    ; Back to the beginning
+
 
 
 ; ==============================================================
+; KeyboardInput
+; 
+; Process Keycodes.
+; Mask out shift and ctrl, so any form of the character works.
+;
+; Left Arrow  (+) aka #$6 == Previous tile Pattern
+; Right arrow (*) aka #$7 == Next Tile Pattern
 
-	; Run the next pattern after a key is pressed
+KeyboardInput
+	lda CH                  ; A = CH -- Read OS register for last keypress
+	cmp #255                ; Is a key pressed?  255 == No Key.
+	bne bki_TestKeys        ; Something was pressed.
+
+bki_ExitZero
+	lda #0                  ; Nothing was pressed...
+	rts                     ; so we're done here.
+
+bki_TestKeys
+	and #$3F                ; Remove Ctrl and Shift bits
+; Testing Left Arrow...
+	cmp #6                  ; Is it the left arrow?
+	bne bki_TestRightArrow  ; No.
+	
+	dec zPatternNumber      ; Pattern Number--
+	bpl bki_ExitInput       ; Positive value, so exit with input flag.
+	lda #[NUM_PATTERNS-1]   ; Went negative.  Wrap to last pattern number.
+	sta zPatternNumber      ; Reset pattern
+	bpl bki_ExitInput       ; Exit with Input Flag.
+	
+bki_TestRightArrow
+	cmp #7
+	bne bki_ExitZero        ; Exit with zero flagging no input.
 	
 	inc zPatternNumber      ; Pattern Number++
 	lda zPatternNumber      ; A = Pattern Number
 	cmp #NUM_PATTERNS       ; If A == the end of the pattern list ?
-	bcc bGoToStart          ; No.  Skip resetting the pattern number
-
+	bcc bki_ExitInput       ; No.  Skip resetting the pattern number
 	lda #0                  ; A = 0 -- go back to first pattern
 	sta zPatternNumber      ; Save to Pattern Number
 
-bGoToStart
-	jmp bStart    ; Back to the beginning
+bki_ExitInput
+	lda #1 
+
+	rts
 
 
+; ==============================================================
+; WaitTOF
+;
+; Delay until start of the next frame.
+; This is an adequate pause for polling for input.
+
+WaitTOF                     ; Where did that come from?  Hmmm.
+	lda RTCLOK60            ; Get the Jiffy Clock
+	
+bwtof_FrameWait
+	cmp RTCLOK60            ; Did the jiffy clock change?
+	beq bwtof_FrameWait     ; Nope.  Keep looping through this frame.
+	rts
+	
+	
+; ==============================================================
+; ProcessConsoleKeys 
+;
+; Console Key Support.
+;
+; Run debounce of Console Keys and require key be 
+; released before accepting new input.
+;
+; Y is the key.  Do not change it during process.
+; 0 = Start
+; 1 = Select
+; 2 = Option
+
+ProcessConsoleKeys    ; Loop through the 3 keys
+	ldy #2              ; 2, 1, 0...
+bpc_LoopConsoleKeys
+	jsr ProcessConsoleEvents ; Process Debounce and flag input
+	bne bDoConsoleKey   ; !0 means this is an input event
+	dey                 ; doing next key
+	bpl bpc_LoopConsoleKeys 
+	rts
+
+
+; Process Input event for the Console Key.
+; Y is the key.  Do not change it.
+; 0 = Start  -- Turn on the Attract mode (turned off by any 
+;               regular keyboard key.)
+; 1 = Select -- Toggle dark/light v dark/light for tiles
+; 2 = Option -- cycle to next base color
+
+
+bDoConsoleKey 
+	cpy #0   ; 0 = Start
+	bne bdck_TestSelect ; Try next one
+	lda #255
+	sta ATRACT ; turn on color cycling.
+	rts
+	
+bdck_TestSelect ; 1 = Select
+	cpy #1
+	bne bdck_TestOption ; Nope.  Try last one.
+	inc zTileColorType
+	lda zTileColorType
+	and #1
+	sta zTileColorType
+	jmp bdck_SetColors
+	
+bdck_TestOption
+	cpy #2   ; 2 = Option	
+	bne bdck_Exit ; This should not happen.
+	clc
+	lda #16        ; Add 16 to the base color
+	adc zBaseColor
+	sta zBaseColor
+	
+bdck_SetColors
+	lda zBaseColor
+	ldx zTileColorType
+	bne bdck_LightOnDark  ; 1 == Light Tile on Dark background
+	ora #$e               ; 0 == Dark Tile on Light Background
+	sta COLOR2            ; background color.
+	lda #0 
+	sta COLOR1            ; Tile (text) luminance.
+	rts
+	
+bdck_LightOnDark	; 1 == Light Tile on Dark background
+	sta COLOR2            ; background color.
+	lda #$e
+	sta COLOR1            ; Tile (text) luminance.
+
+bdck_Exit
+	rts                  ; done.
+
+
+; ==============================================================
+; ProcessConsoleEvents
+;
+; The OS handles normal Keyboard bounce and Input.
+; It doesn't deal with the function keys.  
+; To prevent a function key from registering as 
+; continuous input when it is pressed, this function 
+; analyzes state and only flags an input received 
+; when conditions are met:
+; The Console key must be pressed for several flames 
+; before an input event is flagged. 
+; The Console key must be released and pressed again 
+; in order to cause a new Input event. 
+
+; Y is the key.  Do not change it.
+; 0 = Start
+; 1 = Select
+; 2 = Option
+
+; CONSOLE_START =        %00000001 ; Start button
+; CONSOLE_SELECT =       %00000010 ; Select button
+; CONSOLE_OPTION =       %00000100 ; Option button
+
+CONSOLE_DEBOUNCE_COUNT = 3  ; frame count to suppress intermittent contact.
+
+; Convert Y value 2, 1, 0  into the bit in the CONSOLE register
+gConsoleKeyBit
+	.byte CONSOLE_START,CONSOLE_SELECT,CONSOLE_OPTION
+
+; 0  Not pressed ; !0 = pressed
+gConsoleKeyState 
+	.byte 0,0,0
+
+; Number of frames to count before accepting changes
+gConsoleDelayCounter 
+	.byte 0,0,0
+
+; flag for input.   0 = No Input.  1 = Input occurred.  
+gConsoleKeyInput
+	.byte 0,0,0
+
+
+ProcessConsoleEvents
+	lda gConsoleKeyState,y
+	beq bpce_LastStateOff      ; goto - No key was pressed on last scan
+	; A key was pressed/ON in the last scan
+	lda CONSOL    ; Test current key state
+	eor #CONSOLE_KEYS ; flip the 0s to 1s
+	and gConsoleKeyBit,Y
+	bne bpce_StateOnKeyOn ; goto - Key continues to be pressed.
+	; The key was on, but now is off.
+	; Reset state to off and start counter to sustain off state
+	lda #CONSOLE_DEBOUNCE_COUNT
+	sta gConsoleDelayCounter,y
+	lda #0
+	sta gConsoleKeyState,y
+	beq bpce_SetConsoleInputAndExit
+
+bpce_StateOnKeyOn
+	lda gConsoleDelayCounter,y
+	beq bpce_SetConsoleInputAndExit
+	
+	jsr bpce_DecrementCounter    ; Decrement counter through X and update counter.
+	cpx #0                       ; Set flags based on X again. 
+	bne bpce_SetNoInputAndExit   ; State is On, Key On, Countdown still in progress
+	; State is On, Key is On, Countdown ended.  Therefore Flag Input.
+	lda #1
+	bne bpce_SetConsoleInputAndExit
+
+bpce_LastStateOff      ; No key was pressed on last scan
+	lda gConsoleDelayCounter,y ; Is copunter in progress?
+	beq bpce_StateOffCounterZero ; No input and no counter
+	
+	jsr bpce_DecrementCounter    ; Decrement counter through X and update counter.
+	lda #0 ; Zero input enforced while counting.
+	beq bpce_SetConsoleInputAndExit
+
+bpce_StateOffCounterZero ; Counter ended
+	lda CONSOL    ; Test current key state
+	eor #CONSOLE_KEYS  ; flip the 0s to 1s
+	and gConsoleKeyBit,Y
+	beq bpce_SetConsoleInputAndExit ; No input, so return no input.
+	; A key is pressed.
+	lda #CONSOLE_DEBOUNCE_COUNT ; Start the bounce/delay counter
+	sta gConsoleDelayCounter,y
+	lda #1   ; Flag that input is now being tested
+	sta gConsoleKeyState,y 
+
+bpce_SetNoInputAndExit
+	lda #0  ; But it is not yet an input event.
+
+bpce_SetConsoleInputAndExit
+	sta gConsoleKeyInput,y
+
+bpce_Exit
+	rts    ; Fini    bProcessConsoleEvents
+	
+
+bpce_DecrementCounter
+;	stx absolute,y is not a thing. Therefore, the madness below....
+	tax                          ; X = A
+	dex                          ; X = X - 1
+	txa                          ; A = X, because X can't write back the same way A read it
+	sta gConsoleDelayCounter,y   ; Update the counter.
+;	lda #0        ; Need to preset A for the exit when countdown remains in progress.
+	rts
+	
+	
 ; ==============================================================
 
 ; The original code used pointers with both the low bytes and 
@@ -593,7 +849,7 @@ gScreenMemory     ; Just defining where this occurs in memory.
 	.byte COLOR_BLACK|$0 ; COLOR1/COLPF1 - text luminance in Mode 2. Color 0, Luminance $0 
 	.byte COLOR_BLACK|$E ; COLOR2/COLPF2 - background in Mode 2.     Color 0, Luminance $E
 	.byte $00            ; COLOR3/COLPF3 (not used in Mode 2).
-	.byte COLOR_BLACK|$8 ; COLOR4/COLBK  - border in Mode 2.  Color 0, Luminance $8
+	.byte COLOR_BLACK|$0 ; COLOR4/COLBK  - border in Mode 2.  Color 0, Luminance $0
 
 
 ; We have to start the Atari's custom screen display by updating
@@ -608,15 +864,19 @@ gScreenMemory     ; Just defining where this occurs in memory.
 
 	mDiskPoke SDMCTL,ENABLE_DL_DMA|PLAYFIELD_WIDTH_WIDE ; Turn on screen DMA. 
 
+	mDiskpoke CONSOL,0
 
 ; This is how we make the executable automatically run on the 
 ; Atari.  Store the address of the start of the code to run in
 ; DOS_RUN_ADDR/$02E0.  When file loading completes DOS will 
 ; execute this address.
 
-	ORG DOS_RUN_ADDR
 
-	.word bStart
+;	ORG DOS_RUN_ADDR
+
+;	.word StartTruchet
+
+	mDiskDPoke DOS_RUN_ADDR,StartTruchet
 
 	END
 
