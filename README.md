@@ -79,11 +79,16 @@ Update 2025-08-30
 
  * The tile pattern can be changed to the next pattern by using the right arrow, and previous pattern using the left arrow.
    (Tested on atari800 emulator running on a linux laptop and Altirra on a laptop running Windows.  The arrow keys work fine.  If you mess with the arrow key input mapping remember what you did to yourself.)
+
+* The program now has alternate images for the tile.   The tile image can be changed by using the Up and Down Arrows.  It does some mind blowing things.
  
- * Console Key Support:
-   Option = cycle to next base color
-   Select = Toggle dark/light v dark/light for tiles
-   Start  = Turn on the Attract mode (turned off by any regular keyboard key.)
+* Console Key Support:
+  
+** Option = cycle to next base color
+
+** Select = Toggle dark/light v dark/light for tiles
+
+** Start  = Turn on the Attract mode (turned off by any regular keyboard key.)
 
 ---
 
