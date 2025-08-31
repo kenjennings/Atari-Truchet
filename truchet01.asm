@@ -91,10 +91,11 @@
 
 ; Program Defines
 
-SCREEN_WIDTH  = 48      ; Screen width in characters.
-SCREEN_HEIGHT = 30      ; screen height in lines.
+SCREEN_WIDTH    = 48 ; Screen width in characters.
+SCREEN_HEIGHT   = 30 ; screen height in lines.
 
-NUM_PATTERNS  = 30      ; number of tile patterns the program draws
+NUM_PATTERNS    = 30 ; number of tile patterns the program draws
+NUM_TILE_IMAGES = 7  ; Number of images for tiles.
 
 
 ; ==============================================================
@@ -131,7 +132,11 @@ zDisplayList
 
 ; Program Variables in Page 0
 
-	ORG $F0
+	ORG $ed
+
+zTileImageNumber     .byte 0 ; at $ed - reference, current tile image number.
+zSourcebit           .byte 0 ; at $ee - used for transforming/bit mirroring.
+zDestbit             .byte 0 ; at $ef - used for transforming/bit mirroring.
 
 zPatternNumber       .byte 0 ; at $f0 - reference, current pattern number
 zPatternWidth        .byte 0 ; at $f1 - reference, width (X) of current pattern
@@ -139,7 +144,7 @@ zPatternHeight       .byte 0 ; at $f2 - reference, height (Y) of current pattern
 
 zPatternX            .byte 0 ; at $f3 - working X position in pattern
 zPatternY            .byte 0 ; at $f4 - working Y position in pattern
-zPatternPointer      .word 0 ; at $f5/$f6 - working pointer to pattern.
+zPatternPointer      .word 0 ; at $f5/$f6 - working pointer to pattern. (reuse for transform)
 zPatternPointerCopy  .word 0 ; at $f7/$f8 - backup used to reset pointer to start
 zBaseColor           .byte 0 ; at $f9    - color for screen.
 zTileColorType       .byte 0 ; at $fa    - 0 = Tiles dark/light. 1 = Tiles light/dark. 
@@ -184,6 +189,8 @@ StartTruchet
 
 ; ==============================================================
 
+	jsr InstallTileImage ; Load cset with tile images.
+
 	; Set up the variables for this pattern (based on Pattern number)
 
 	ldx zPatternNumber        ; X = Pattern Number  (to be used as array index) 
@@ -225,8 +232,8 @@ bDrawLoop
 	; Get character from tile array and plot at current screen position...
 	ldy zPatternX           ; Y = Pattern X position
 	lda (zPatternPointer),Y ; A = *(Pattern Pointer + Y) -- tile ID number from pattern
-	tax                     ; X = tile ID number from pattern.
-	lda zaTileCodes,x       ; A = character from tile array ( tile[ x ] )
+;	tax                     ; X = tile ID number from pattern.
+;	lda zaTileCodes,x       ; A = character from tile array ( tile[ x ] )
 	ldy zScreenX            ; Y = Screen X position
 	sta (zScreenPointer),y  ; Screen byte *(Screen Pointer + Y) = tile character 
 
@@ -330,8 +337,11 @@ bGoToStart
 ; Process Keycodes.
 ; Mask out shift and ctrl, so any form of the character works.
 ;
-; Left Arrow  (+) aka #$6 == Previous tile Pattern
-; Right arrow (*) aka #$7 == Next Tile Pattern
+; Left Arrow  (+) aka #$06 == Previous tile Pattern
+; Right arrow (*) aka #$07 == Next Tile Pattern
+;
+; Up Arrow    (-) aka #$0E  == Previous Tile Image
+; Down Arrow  (=) aka #$0F == Next Tile Image
 
 KeyboardInput
 	lda CH                  ; A = CH -- Read OS register for last keypress
@@ -355,8 +365,8 @@ bki_TestKeys
 	bpl bki_ExitInput       ; Exit with Input Flag.
 	
 bki_TestRightArrow
-	cmp #7
-	bne bki_ExitZero        ; Exit with zero flagging no input.
+	cmp #7                  ; Is it Right Arrow?
+	bne bki_TestUpArrow     ; No.
 	
 	inc zPatternNumber      ; Pattern Number++
 	lda zPatternNumber      ; A = Pattern Number
@@ -364,10 +374,31 @@ bki_TestRightArrow
 	bcc bki_ExitInput       ; No.  Skip resetting the pattern number
 	lda #0                  ; A = 0 -- go back to first pattern
 	sta zPatternNumber      ; Save to Pattern Number
+	beq bki_ExitInput       ; Exit with Input Flag. 
+
+bki_TestUpArrow
+	cmp #$0e                ; Is it Up Arrow?
+	bne bki_TestDownArrow   ; No.
+	dec zTileImageNumber    ; Image Number --
+	bpl bki_ExitInput       ; Positive value, so exit with input flag.
+	lda #[NUM_TILE_IMAGES-1] ; Went negative.  Wrap to last tile image number.
+	sta zTileImageNumber    ; Reset image number
+	bpl bki_ExitInput       ; Exit with Input Flag.
+
+bki_TestDownArrow 
+	cmp #$0F                ; Is it Down Arrow?
+	bne bki_ExitZero        ; No. Exit with zero flagging no input.
+	inc zTileImageNumber    ; Image Number --
+	lda zTileImageNumber    ; A = Tile Image Number
+	cmp #NUM_TILE_IMAGES    ; If A == the end of the tile image list ?
+	bcc bki_ExitInput       ; No.  Skip resetting the tile image  number
+	lda #0                  ; A = 0 -- go back to first tile image
+	sta zTileImageNumber    ; Save to tile image Number
 
 bki_ExitInput
 	lda #1 
 
+bki_Exit
 	rts
 
 
@@ -567,7 +598,94 @@ bpce_DecrementCounter
 ;	lda #0        ; Need to preset A for the exit when countdown remains in progress.
 	rts
 	
+
+; ==============================================================
+; InstalTileImage
+;
+; Copy tile image to position 1 in the redefined character set.
+
+InstallTileImage
+
+	ldy zTileImageNumber      ; Current tile image number
+	lda gaTileImageListLow,Y  ; Get Low byte from list
+	sta zPatternPointer       ; (Reusing for this tile copy)
+	lda gaTileImageListHigh,Y ; Get High byte from list
+	sta zPatternPointer+1     ; complete the pointer.
 	
+	ldy #7                    
+
+biti_LoopBytes
+	lda (zPatternPointer),y   ; Get a byte from memeory.
+	sta gTileImage1,y         ; Put it into the forst character's image.
+	dey
+	bpl biti_LoopBytes        ; Continue until all 8 bytes copied.
+
+	jsr TransformTile         ; Build tile images 2, 3, 4 from image 1.
+	
+	rts
+
+
+; ==============================================================
+; TransformTile
+;
+; Convert the tile in character position 1 into a horizontally 
+; mirrored version that goes into position 4.
+; Then the tiles in positions 1 and 4 are vertically flipped
+; to create tiles 2 and 3 respectively.
+;
+; This allow the program to maintain data for only 1 tile 
+; image, and then fill out the entire set from that data.
+; Prior to calling this function it is expected that the image 
+; has been copied into position 1.
+
+TransformTile
+
+	ldy #7   ; 7 to 0 bytes in the image.
+	
+btt_LoopBytes
+	lda #0   ; Make the target zero if there are no bits to move.
+	sta gTileImage4,y ; Destination of the horizontal mirror.
+	
+	lda #%10000000    ; High Bit  
+	sta zSourceBit
+	lda #%00000001    ; mirrors to Low bit.
+	sta zDestBit
+	
+btt_LoopBits
+	lda gTileImage1,y
+	and zSourceBit
+	beq btt_SkipBit
+	
+	lda gTileImage4,y
+    ora zDestBit
+	sta gTileImage4,y
+
+btt_SkipBit
+	lsr zSourceBit ; Move Bit ->
+	asl zDestBit   ; Move Bit <-
+	bcc btt_LoopBits 
+
+	dey
+	bpl btt_LoopBytes
+
+; Now vertically flip tile 1 into 2, and tile 4 into 3....
+
+	ldy #7
+	ldx #0
+
+btt_LoopByteCopy
+	lda gTileImage1,Y
+	sta gTileImage2,X
+	lda gTileImage4,Y
+	sta gTileImage3,X
+	
+	inx
+	dey
+	bpl btt_LoopByteCopy
+
+	rts
+
+
 ; ==============================================================
 
 ; The original code used pointers with both the low bytes and 
@@ -628,187 +746,434 @@ gaPatternListHeight
 ; 2 == internal code $CA -- upper right triangle (inverse video $4A)
 ; 3 == internal code $48 -- lower right triangle 
 
+; New Update... 
+; Switching to a redefined character set means there is no 
+; need to have a translation from tile number to a character 
+; code corresponding to an ATASCII character.  The tile images
+; can be moved to the start of the character set, and the 
+; tile IDs can be the real internal character code in the 
+; Atari character set.  
+; 
+; Therefore, the 0 to 3 values meant for the translation 
+; table to lookup character code can be replaced with 
+; values 1 to 4 corresponding to the actual character codes.
+
 pa  ; 1,1
-	.byte 0
+;	.byte 0
+	.byte 1
 
 pb  ; 1,2
-	.byte 0,2
+;	.byte 0,2
+	.byte 1,3
 
 pc  ; 2,2
-	.byte 0,2
-	.byte 2,0
+;	.byte 0,2
+;	.byte 2,0
+	.byte 1,3
+	.byte 3,1
 
 pd  ; 2,2
-	.byte 1,0
-	.byte 2,3
+;	.byte 1,0
+;	.byte 2,3
+	.byte 2,1
+	.byte 3,4
 
 pe  ; 4,4
-	.byte 1,2,3,0
-	.byte 2,1,0,3
-	.byte 3,0,1,2
-	.byte 0,3,2,1
+;	.byte 1,2,3,0
+;	.byte 2,1,0,3
+;	.byte 3,0,1,2
+;	.byte 0,3,2,1
+	.byte 2,3,4,1
+	.byte 3,2,1,4
+	.byte 4,1,2,3
+	.byte 1,4,3,2
+	
 
 pf  ; 2,2
-	.byte 1,2
-	.byte 0,3
+;	.byte 1,2
+;	.byte 0,3
+	.byte 2,3
+	.byte 1,4
 
 pg  ; 2,4
-	.byte 0,2
-	.byte 2,0
-	.byte 2,0
-	.byte 0,2
+;	.byte 0,2
+;	.byte 2,0
+;	.byte 2,0
+;	.byte 0,2
+	.byte 1,3
+	.byte 3,1
+	.byte 3,1
+	.byte 1,3
 
 ph  ; 3,3
-	.byte 1,3,3
-	.byte 3,1,3
-	.byte 3,3,1
+;	.byte 1,3,3
+;	.byte 3,1,3
+;	.byte 3,3,1
+	.byte 2,4,4
+	.byte 4,2,4
+	.byte 4,4,2
 
 pi  ; 4,4
-	.byte 2,0,0,2
-	.byte 0,2,2,0
-	.byte 0,2,2,0
-	.byte 2,0,0,2
+;	.byte 2,0,0,2
+;	.byte 0,2,2,0
+;	.byte 0,2,2,0
+;	.byte 2,0,0,2
+	.byte 3,1,1,3
+	.byte 1,3,3,1
+	.byte 1,3,3,1
+	.byte 3,1,1,3
 
 pl  ; 4,4
-	.byte 3,0,3,0
-	.byte 2,3,0,1
-	.byte 3,2,1,0
-	.byte 2,1,2,1
+;	.byte 3,0,3,0
+;	.byte 2,3,0,1
+;	.byte 3,2,1,0
+;	.byte 2,1,2,1
+	.byte 4,1,4,1
+	.byte 3,4,1,2
+	.byte 4,3,2,1
+	.byte 3,2,3,2
 
 pm  ; 2,2
-	.byte 1,2
-	.byte 2,1
+;	.byte 1,2
+;	.byte 2,1
+	.byte 2,3
+	.byte 3,2
 
 pn  ; 4,4
-	.byte 1,0,3,2
-	.byte 2,3,0,1
-	.byte 3,2,1,0
-	.byte 0,1,2,3
+;	.byte 1,0,3,2
+;	.byte 2,3,0,1
+;	.byte 3,2,1,0
+;	.byte 0,1,2,3
+	.byte 2,1,4,3
+	.byte 3,4,1,2
+	.byte 4,3,2,1
+	.byte 1,2,3,4
 
 po  ; 4,2
-	.byte 3,0,1,2
-	.byte 1,2,3,0
+;	.byte 3,0,1,2
+;	.byte 1,2,3,0
+	.byte 4,1,2,3
+	.byte 2,3,4,1
 
 pp  ; 2,2
-	.byte 1,2
-	.byte 3,0
+;	.byte 1,2
+;	.byte 3,0
+	.byte 2,3
+	.byte 4,1
 
 pq  ; 4,2
-	.byte 3,3,0,0
-	.byte 1,1,2,2
+;	.byte 3,3,0,0
+;	.byte 1,1,2,2
+	.byte 4,4,1,1
+	.byte 2,2,3,3
 
 pr  ; 2,1
-	.byte 3,0
+;	.byte 3,0
+	.byte 4,1
 
 ps  ; 4,1
-	.byte 3,0,1,2
+;	.byte 3,0,1,2
+	.byte 4,1,2,3
 
 pt  ; 4,1
-	.byte 1,3,0,2
+;	.byte 1,3,0,2
+	.byte 2,4,1,3
 
 pv  ; 8,8
-	.byte 2,0,3,0,2,0,1,0
-	.byte 0,3,0,2,0,1,0,2
-	.byte 3,0,2,0,1,0,2,0
-	.byte 0,2,0,1,0,2,0,3
-	.byte 2,0,1,0,2,0,3,0
-	.byte 0,1,0,2,0,3,0,2
-	.byte 1,0,2,0,3,0,2,0
-	.byte 0,2,0,3,0,2,0,1
+;	.byte 2,0,3,0,2,0,1,0
+;	.byte 0,3,0,2,0,1,0,2
+;	.byte 3,0,2,0,1,0,2,0
+;	.byte 0,2,0,1,0,2,0,3
+;	.byte 2,0,1,0,2,0,3,0
+;	.byte 0,1,0,2,0,3,0,2
+;	.byte 1,0,2,0,3,0,2,0
+;	.byte 0,2,0,3,0,2,0,1
+	.byte 3,1,4,1,3,1,2,1
+	.byte 1,4,1,3,1,2,1,3
+	.byte 4,1,3,1,2,1,3,1
+	.byte 1,3,1,2,1,3,1,4
+	.byte 3,1,2,1,3,1,4,1
+	.byte 1,2,1,3,1,4,1,3
+	.byte 2,1,3,1,4,1,3,1
+	.byte 1,3,1,4,1,3,1,2
 
 pu  ; 4,4
-	.byte 1,3,0,2
-	.byte 3,0,2,1
-	.byte 0,2,1,3
-	.byte 2,1,3,0
+;	.byte 1,3,0,2
+;	.byte 3,0,2,1
+;	.byte 0,2,1,3
+;	.byte 2,1,3,0
+	.byte 2,4,1,3
+	.byte 4,1,3,2
+	.byte 1,3,2,4
+	.byte 3,2,4,1
 
 px  ; 6,6
-	.byte 2,0,3,0,0,2
-	.byte 2,1,2,2,0,0
-	.byte 3,0,0,2,2,0
-	.byte 2,2,0,0,2,1
-	.byte 0,2,2,0,3,0
-	.byte 0,0,2,1,2,2
+;	.byte 2,0,3,0,0,2
+;	.byte 2,1,2,2,0,0
+;	.byte 3,0,0,2,2,0
+;	.byte 2,2,0,0,2,1
+;	.byte 0,2,2,0,3,0
+;	.byte 0,0,2,1,2,2
+	.byte 3,1,4,1,1,3
+	.byte 3,2,3,3,1,1
+	.byte 4,1,1,3,3,1
+	.byte 3,3,1,1,3,2
+	.byte 1,3,3,1,4,1
+	.byte 1,1,3,2,3,3
 
 py  ; 4,4
-	.byte 1,3,0,2
-	.byte 3,1,2,0
-	.byte 2,0,3,1
-	.byte 0,2,1,3
+;	.byte 1,3,0,2
+;	.byte 3,1,2,0
+;	.byte 2,0,3,1
+;	.byte 0,2,1,3
+	.byte 2,4,1,3
+	.byte 4,2,3,1
+	.byte 3,1,4,2
+	.byte 1,3,2,4
 
 pz  ; 4,2
-	.byte 1,2,0,3
-	.byte 3,1,2,0
+;	.byte 1,2,0,3
+;	.byte 3,1,2,0
+	.byte 2,3,1,4
+	.byte 4,2,3,1
 
 pamp ; 4,4
-	.byte 1,3,2,0
-	.byte 3,1,0,2
-	.byte 0,2,3,1
-	.byte 2,0,1,3
+;	.byte 1,3,2,0
+;	.byte 3,1,0,2
+;	.byte 0,2,3,1
+;	.byte 2,0,1,3
+	.byte 2,4,3,1
+	.byte 4,2,1,3
+	.byte 1,3,4,2
+	.byte 3,1,2,4
 
 p1  ; 8,8
-	.byte 0,2,0,2,1,3,1,3
-	.byte 1,3,1,3,0,2,0,2
-	.byte 3,1,3,1,2,0,2,0
-	.byte 1,3,1,3,0,2,0,2
-	.byte 3,1,3,1,2,0,2,0
-	.byte 2,0,2,0,3,1,3,1
-	.byte 0,2,0,2,1,3,1,3
-	.byte 2,0,2,0,3,1,3,1
+;	.byte 0,2,0,2,1,3,1,3
+;	.byte 1,3,1,3,0,2,0,2
+;	.byte 3,1,3,1,2,0,2,0
+;	.byte 1,3,1,3,0,2,0,2
+;	.byte 3,1,3,1,2,0,2,0
+;	.byte 2,0,2,0,3,1,3,1
+;	.byte 0,2,0,2,1,3,1,3
+;	.byte 2,0,2,0,3,1,3,1
+	.byte 1,3,1,3,2,4,2,4
+	.byte 2,4,2,4,1,3,1,3
+	.byte 4,2,4,2,3,1,3,1
+	.byte 2,4,2,4,1,3,1,3
+	.byte 4,2,4,2,3,1,3,1
+	.byte 3,1,3,1,4,2,4,2
+	.byte 1,3,1,3,2,4,2,4
+	.byte 3,1,3,1,4,2,4,2
 
 p2  ; 6,6
-	.byte 3,0,2,1,3,0
-	.byte 0,2,0,3,1,3
-	.byte 2,0,1,2,3,1
-	.byte 3,1,0,3,2,0
-	.byte 1,3,1,2,0,2
-	.byte 2,1,3,0,2,1
+;	.byte 3,0,2,1,3,0
+;	.byte 0,2,0,3,1,3
+;	.byte 2,0,1,2,3,1
+;	.byte 3,1,0,3,2,0
+;	.byte 1,3,1,2,0,2
+;	.byte 2,1,3,0,2,1
+	.byte 4,1,3,2,4,1
+	.byte 1,3,1,4,2,4
+	.byte 3,1,2,3,4,2
+	.byte 4,2,1,4,3,1
+	.byte 2,4,2,3,1,3
+	.byte 3,2,4,1,3,2
 
 p3  ; 10,10
-	.byte 1,2,1,2,0,2,3,0,1,3
-	.byte 3,0,3,0,2,0,2,1,3,1
-	.byte 1,2,1,2,0,2,0,3,1,3
-	.byte 0,1,2,3,1,3,1,2,0,2
-	.byte 1,0,3,2,0,2,0,3,1,3
-	.byte 0,3,0,3,1,3,1,2,0,2
-	.byte 2,1,2,1,3,1,3,0,2,0
-	.byte 0,3,0,3,1,3,2,1,0,2
-	.byte 2,1,2,1,3,0,3,0,3,0
-	.byte 3,0,3,0,2,1,2,1,2,1
+;	.byte 1,2,1,2,0,2,3,0,1,3
+;	.byte 3,0,3,0,2,0,2,1,3,1
+;	.byte 1,2,1,2,0,2,0,3,1,3
+;	.byte 0,1,2,3,1,3,1,2,0,2
+;	.byte 1,0,3,2,0,2,0,3,1,3
+;	.byte 0,3,0,3,1,3,1,2,0,2
+;	.byte 2,1,2,1,3,1,3,0,2,0
+;	.byte 0,3,0,3,1,3,2,1,0,2
+;	.byte 2,1,2,1,3,0,3,0,3,0
+;	.byte 3,0,3,0,2,1,2,1,2,1
+	.byte 2,3,2,3,1,3,4,1,2,4
+	.byte 4,1,4,1,3,1,3,2,4,2
+	.byte 2,3,2,3,1,3,1,4,2,4
+	.byte 1,2,3,4,2,4,2,3,1,3
+	.byte 2,1,4,3,1,3,1,4,2,4
+	.byte 1,4,1,4,2,4,2,3,1,3
+	.byte 3,2,3,2,4,2,4,1,3,1
+	.byte 1,4,1,4,2,4,3,2,1,3
+	.byte 3,2,3,2,4,1,4,1,4,1
+	.byte 4,1,4,1,3,2,3,2,3,2
 
 p4  ; 10,10
-	.byte 1,3,0,2,0,2,2,1,1,3
-	.byte 3,1,2,0,2,0,2,1,3,1
-	.byte 1,1,2,2,0,2,0,3,1,3
-	.byte 1,3,0,2,2,0,2,1,3,1
-	.byte 0,2,1,3,3,1,3,0,2,0
-	.byte 0,0,3,3,1,3,1,2,0,2
-	.byte 2,0,3,1,3,1,3,0,2,0
-	.byte 0,2,1,3,1,3,3,0,0,2
-	.byte 2,0,3,1,3,3,1,2,0,0
-	.byte 3,1,2,0,2,2,0,3,1,1
+;	.byte 1,3,0,2,0,2,2,1,1,3
+;	.byte 3,1,2,0,2,0,2,1,3,1
+;	.byte 1,1,2,2,0,2,0,3,1,3
+;	.byte 1,3,0,2,2,0,2,1,3,1
+;	.byte 0,2,1,3,3,1,3,0,2,0
+;	.byte 0,0,3,3,1,3,1,2,0,2
+;	.byte 2,0,3,1,3,1,3,0,2,0
+;	.byte 0,2,1,3,1,3,3,0,0,2
+;	.byte 2,0,3,1,3,3,1,2,0,0
+;	.byte 3,1,2,0,2,2,0,3,1,1
+	.byte 2,4,1,3,1,3,3,2,2,4
+	.byte 4,2,3,1,3,1,3,2,4,2
+	.byte 2,2,3,3,1,3,1,4,2,4
+	.byte 2,4,1,3,3,1,3,2,4,2
+	.byte 1,3,2,4,4,2,4,1,3,1
+	.byte 1,1,4,4,2,4,2,3,1,3
+	.byte 3,1,4,2,4,2,4,1,3,1
+	.byte 1,3,2,4,2,4,4,1,1,3
+	.byte 3,1,4,2,4,4,2,3,1,1
+	.byte 4,2,3,1,3,3,1,4,2,2
 
 p5  ; 6,6
-	.byte 3,1,2,1,2,0
-	.byte 1,3,0,3,0,2
-	.byte 0,2,3,0,1,3
-	.byte 1,3,2,1,0,2
-	.byte 0,2,1,2,1,3
-	.byte 2,0,3,0,3,1
+;	.byte 3,1,2,1,2,0
+;	.byte 1,3,0,3,0,2
+;	.byte 0,2,3,0,1,3
+;	.byte 1,3,2,1,0,2
+;	.byte 0,2,1,2,1,3
+;	.byte 2,0,3,0,3,1
+	.byte 4,2,3,2,3,1
+	.byte 2,4,1,4,1,3
+	.byte 1,3,4,1,2,4
+	.byte 2,4,3,2,1,3
+	.byte 1,3,2,3,2,4
+	.byte 3,1,4,1,4,2
 
 p6  ; 12,12
-	.byte 0,3,0,1,2,1,2,1,2,3,0,3
-	.byte 2,2,1,0,3,3,0,0,3,2,1,1
-	.byte 0,2,0,1,3,1,2,0,2,3,1,3
-	.byte 1,3,1,0,2,0,3,1,3,2,0,2
-	.byte 3,3,0,1,2,2,1,1,2,3,0,0
-	.byte 1,2,1,0,3,0,3,0,3,2,1,2
-	.byte 2,1,2,3,0,3,0,3,0,1,2,1
-	.byte 0,0,3,2,1,1,2,2,1,0,3,3
-	.byte 2,0,2,3,1,3,0,2,0,1,3,1
-	.byte 3,1,3,2,0,2,1,3,1,0,2,0
-	.byte 1,1,2,3,0,0,3,3,0,1,2,2
-	.byte 3,0,3,2,1,2,1,2,1,0,3,0
+;	.byte 0,3,0,1,2,1,2,1,2,3,0,3
+;	.byte 2,2,1,0,3,3,0,0,3,2,1,1
+;	.byte 0,2,0,1,3,1,2,0,2,3,1,3
+;	.byte 1,3,1,0,2,0,3,1,3,2,0,2
+;	.byte 3,3,0,1,2,2,1,1,2,3,0,0
+;	.byte 1,2,1,0,3,0,3,0,3,2,1,2
+;	.byte 2,1,2,3,0,3,0,3,0,1,2,1
+;	.byte 0,0,3,2,1,1,2,2,1,0,3,3
+;	.byte 2,0,2,3,1,3,0,2,0,1,3,1
+;	.byte 3,1,3,2,0,2,1,3,1,0,2,0
+;	.byte 1,1,2,3,0,0,3,3,0,1,2,2
+;	.byte 3,0,3,2,1,2,1,2,1,0,3,0
+	.byte 1,4,1,2,3,2,3,2,3,4,1,4
+	.byte 3,3,2,1,4,4,1,1,4,3,2,2
+	.byte 1,3,1,2,4,2,3,1,3,4,2,4
+	.byte 2,4,2,1,3,1,4,2,4,3,1,3
+	.byte 4,4,1,2,3,3,2,2,3,4,1,1
+	.byte 2,3,2,1,4,1,4,1,4,3,2,3
+	.byte 3,2,3,4,1,4,1,4,1,2,3,2
+	.byte 1,1,4,3,2,2,3,3,2,1,4,4
+	.byte 3,1,3,4,2,4,1,3,1,2,4,2
+	.byte 4,2,4,3,1,3,2,4,2,1,3,1
+	.byte 2,2,3,4,1,1,4,4,1,2,3,3
+	.byte 4,1,4,3,2,3,2,3,2,1,4,1
+
+
+; ==============================================================
+
+; Tile graphics.  
+;
+; Define the first character image of a tile shape.  (8 bytes).
+; The program will generate the other three characters on 
+; demand by translating/flipping the first image.   
+; 
+; The characters are:
+; |\    /|
+; |1\  /4|
+; |  \/  |
+; |------|
+; |  /\  |
+; |2/  \3|
+; |/    \|
+;
+;  Character tile 1 (lower left) is the one needing data.
+
+gaTileImageListLow
+	mLowByte gTile00,gTile01,gTile02,gTile03,gTile04,gTile05,gTile06
+
+gaTileImageListHigh
+	mHighByte gTile00,gTile01,gTile02,gTile03,gTile04,gTile05,gTile06
+
+gTile00 ; Default.  Like the OS
+	.byte %10000000
+	.byte %11000000
+	.byte %11100000
+	.byte %11110000
+	.byte %11111000
+	.byte %11111100
+	.byte %11111110
+	.byte %11111111
+	
+gTile01 ; Like Default, but one less row
+	.byte %00000000
+	.byte %10000000
+	.byte %11000000
+	.byte %11100000
+	.byte %11110000
+	.byte %11111000
+	.byte %11111100
+	.byte %11111110
+
+gTile02 ; Diagonal Line
+	.byte %11000000
+	.byte %11100000
+	.byte %01110000
+	.byte %00111000
+	.byte %00011100
+	.byte %00001110
+	.byte %00000111
+	.byte %00000011
+
+gTile03 ; Corner 3
+	.byte %00000000
+	.byte %00000000
+	.byte %00000000
+	.byte %00000000
+	.byte %11110000
+	.byte %11110000
+	.byte %11110000
+	.byte %11110000
+
+gTile04 ; corner + outline
+	.byte %00000000
+	.byte %00000000
+	.byte %11111110
+	.byte %00000110
+	.byte %00000110
+	.byte %11100110
+	.byte %11100110
+	.byte %11100110
+
+gTile05 ; Pointy out
+	.byte %10000000
+	.byte %11000000
+	.byte %11111100
+	.byte %11111100
+	.byte %11111100
+	.byte %11111100
+	.byte %11111110
+	.byte %11111111
+
+gTile06 ; Round 
+	.byte %00000000
+	.byte %00000000
+	.byte %00000000
+	.byte %11100000
+	.byte %00110000
+	.byte %00011000
+	.byte %00001100
+	.byte %00001100
+
+; ==============================================================
+
+; We need space for the custom character set.   It must be 
+; on a 1K boundary 
+
+	.align 1024 
+
+gCSetMemory
+	.byte 0,0,0,0,0,0,0,0 ; guarantee that blank space is blank.
+
+gTileImage1   ; Just declare where the first tile image goes.
+
+gTileImage2 = gTileImage1 + 8; and the other images...
+gTileImage3 = gTileImage2 + 8
+gTileImage4 = gTileImage3 + 8
 
 
 ; ==============================================================
@@ -864,7 +1229,9 @@ gScreenMemory     ; Just defining where this occurs in memory.
 
 	mDiskPoke SDMCTL,ENABLE_DL_DMA|PLAYFIELD_WIDTH_WIDE ; Turn on screen DMA. 
 
-	mDiskpoke CONSOL,0
+;	mDiskpoke CONSOL,0
+
+	mDiskPoke CHBAS,>gCSetMemory                  ; Set custom character set
 
 ; This is how we make the executable automatically run on the 
 ; Atari.  Store the address of the start of the code to run in
